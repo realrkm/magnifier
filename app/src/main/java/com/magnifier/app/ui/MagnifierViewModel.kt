@@ -179,27 +179,16 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun updatePeakingBitmap(bitmap: Bitmap?) {
-        val old = _peakingBitmap.value
+        // Let GC/NativeAllocationRegistry reclaim previous bitmaps safely after Compose finishes drawing
         _peakingBitmap.value = bitmap
-        if (old != null && old !== bitmap && !old.isRecycled) {
-            old.recycle()
-        }
     }
 
     fun setFrozenBitmap(bitmap: Bitmap) {
-        val old = _uiState.value.frozenBitmap
         _uiState.update { it.copy(isFrozen = true, frozenBitmap = bitmap) }
-        if (old != null && old !== bitmap && !old.isRecycled) {
-            old.recycle()
-        }
     }
 
     fun unfreeze() {
-        val old = _uiState.value.frozenBitmap
         _uiState.update { it.copy(isFrozen = false, frozenBitmap = null, recognizedText = null) }
-        if (old != null && !old.isRecycled) {
-            old.recycle()
-        }
     }
 
     fun toggleControlsDrawer() {
