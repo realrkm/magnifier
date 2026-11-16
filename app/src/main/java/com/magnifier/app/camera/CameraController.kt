@@ -22,6 +22,8 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.extensions.ExtensionMode
+import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -33,16 +35,18 @@ import java.util.concurrent.TimeUnit
 
 data class CameraCapabilities(
     val minZoom: Float = 1f,
-    val maxZoom: Float = 8f,
+    val maxHardwareZoom: Float = 8f,
     val evMin: Int = 0,
     val evMax: Int = 0,
     val evStep: Float = 0.5f,
-    val hasFlash: Boolean = false
+    val hasFlash: Boolean = false,
+    val computationalExtensionActive: Boolean = false
 )
 
 /**
- * Manages CameraX + Camera2Interop binding, zoom, AF lock, manual focus distance,
- * torch + variable strength, exposure compensation, focus peaking, and high-res capture.
+ * Manages CameraX + Camera2Interop + CameraX Extensions binding, hybrid 200x zoom,
+ * AF lock, manual focus distance, torch + variable strength, exposure compensation,
+ * focus peaking, and max-quality high-res capture.
  */
 @OptIn(ExperimentalCamera2Interop::class)
 class CameraController(private val context: Context) {
@@ -68,66 +72,112 @@ class CameraController(private val context: Context) {
             try {
                 val provider = providerFuture.get()
                 cameraProvider = provider
-                provider.unbindAll()
 
-                val selector = buildSelector(lens)
+                val baseSelector = buildSelector(lens)
+                val extensionsFuture = ExtensionsManager.getInstanceAsync(context, provider)
+                extensionsFuture.addListener({
+                    val extManager = runCatching { extensionsFuture.get() }.getOrNull()
+                    val useAutoExtension = extManager != null &&
+                        lens?.isPhysicalOnly != true &&
+                        runCatching {
+                            extManager.isExtensionAvailable(baseSelector, ExtensionMode.AUTO)
+                        }.getOrDefault(false)
 
-                val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = previewView.surfaceProvider
-                }
-
-                val capture = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .build()
-                imageCapture = capture
-
-                val analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(
-                        ResolutionSelector.Builder()
-                            .setResolutionStrategy(
-                                ResolutionStrategy(
-                                    Size(640, 480),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                                )
-                            )
-                            .build()
-                    )
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also {
-                        it.setAnalyzer(
-                            analysisExecutor,
-                            FocusPeakingAnalyzer(isFocusPeakingEnabled, onPeakingBitmap)
-                        )
+                    val finalSelector = if (useAutoExtension && extManager != null) {
+                        extManager.getExtensionEnabledCameraSelector(baseSelector, ExtensionMode.AUTO)
+                    } else {
+                        baseSelector
                     }
-                imageAnalysis = analysis
 
-                val boundCamera = provider.bindToLifecycle(
-                    lifecycleOwner,
-                    selector,
-                    preview,
-                    capture,
-                    analysis
-                )
-                camera = boundCamera
-
-                val info = boundCamera.cameraInfo
-                val zoomState = info.zoomState.value
-                val evState = info.exposureState
-                onCapabilitiesReady(
-                    CameraCapabilities(
-                        minZoom = zoomState?.minZoomRatio ?: 1f,
-                        maxZoom = (zoomState?.maxZoomRatio ?: 8f).coerceAtLeast(1f),
-                        evMin = evState.exposureCompensationRange.lower,
-                        evMax = evState.exposureCompensationRange.upper,
-                        evStep = evState.exposureCompensationStep.toFloat(),
-                        hasFlash = info.hasFlashUnit()
+                    bindUseCases(
+                        provider = provider,
+                        lifecycleOwner = lifecycleOwner,
+                        previewView = previewView,
+                        selector = finalSelector,
+                        extensionActive = useAutoExtension,
+                        isFocusPeakingEnabled = isFocusPeakingEnabled,
+                        onPeakingBitmap = onPeakingBitmap,
+                        onCapabilitiesReady = onCapabilitiesReady,
+                        onError = onError
                     )
-                )
+                }, mainExecutor)
             } catch (e: Exception) {
                 onError("Camera init failed: ${e.localizedMessage ?: "Unknown error"}")
             }
         }, mainExecutor)
+    }
+
+    private fun bindUseCases(
+        provider: ProcessCameraProvider,
+        lifecycleOwner: LifecycleOwner,
+        previewView: PreviewView,
+        selector: CameraSelector,
+        extensionActive: Boolean,
+        isFocusPeakingEnabled: () -> Boolean,
+        onPeakingBitmap: (Bitmap?) -> Unit,
+        onCapabilitiesReady: (CameraCapabilities) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        try {
+            provider.unbindAll()
+
+            val preview = Preview.Builder().build().also {
+                it.surfaceProvider = previewView.surfaceProvider
+            }
+
+            // Maximize sensor quality for high-zoom super-resolution & ML Kit OCR
+            val capture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .build()
+            imageCapture = capture
+
+            val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                Size(640, 480),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                            )
+                        )
+                        .build()
+                )
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also {
+                    it.setAnalyzer(
+                        analysisExecutor,
+                        FocusPeakingAnalyzer(isFocusPeakingEnabled, onPeakingBitmap)
+                    )
+                }
+            imageAnalysis = analysis
+
+            val boundCamera = provider.bindToLifecycle(
+                lifecycleOwner,
+                selector,
+                preview,
+                capture,
+                analysis
+            )
+            camera = boundCamera
+
+            val info = boundCamera.cameraInfo
+            val zoomState = info.zoomState.value
+            val evState = info.exposureState
+            onCapabilitiesReady(
+                CameraCapabilities(
+                    minZoom = zoomState?.minZoomRatio ?: 1f,
+                    maxHardwareZoom = (zoomState?.maxZoomRatio ?: 8f).coerceAtLeast(1f),
+                    evMin = evState.exposureCompensationRange.lower,
+                    evMax = evState.exposureCompensationRange.upper,
+                    evStep = evState.exposureCompensationStep.toFloat(),
+                    hasFlash = info.hasFlashUnit(),
+                    computationalExtensionActive = extensionActive
+                )
+            )
+        } catch (e: Exception) {
+            onError("Camera bind failed: ${e.localizedMessage ?: "Unknown error"}")
+        }
     }
 
     private fun buildSelector(lens: CameraLensInfo?): CameraSelector {
@@ -143,18 +193,25 @@ class CameraController(private val context: Context) {
             .build()
     }
 
-    fun setZoomRatio(ratio: Float) {
+    /**
+     * Applies hardware zoom up to [CameraCapabilities.maxHardwareZoom]; remaining magnification
+     * up to 200x is handled by hybrid viewport scaling and [SuperResolutionEnhancer].
+     */
+    fun setHardwareZoomRatio(totalZoom: Float) {
         val cam = camera ?: return
         val zoomState = cam.cameraInfo.zoomState.value
         val min = zoomState?.minZoomRatio ?: 1f
-        val max = zoomState?.maxZoomRatio ?: 10f
-        cam.cameraControl.setZoomRatio(ratio.coerceIn(min, max))
+        val max = zoomState?.maxZoomRatio ?: 8f
+        cam.cameraControl.setZoomRatio(totalZoom.coerceIn(min, max))
     }
 
     fun tapToFocus(previewView: PreviewView, x: Float, y: Float, lockAfterFocus: Boolean) {
         val cam = camera ?: return
         val point = previewView.meteringPointFactory.createPoint(x, y)
-        val builder = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+        val builder = FocusMeteringAction.Builder(
+            point,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+        )
         if (lockAfterFocus) {
             builder.disableAutoCancel()
         } else {

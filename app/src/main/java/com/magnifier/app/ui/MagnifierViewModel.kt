@@ -18,6 +18,7 @@ data class MagnifierUiState(
     val activeLens: CameraLensInfo? = null,
     val capabilities: CameraCapabilities = CameraCapabilities(),
     val zoomRatio: Float = 1f,
+    val maxTotalZoom: Float = MAX_TOTAL_ZOOM,
     val afLocked: Boolean = false,
     val manualFocusEnabled: Boolean = false,
     val focusDistanceDiopters: Float = 0f,
@@ -27,12 +28,25 @@ data class MagnifierUiState(
     val activeFilter: InspectionFilter = InspectionFilter.NORMAL,
     val showGrid: Boolean = false,
     val focusPeakingEnabled: Boolean = false,
+    val clarityEnhanceEnabled: Boolean = true,
+    val recognizedText: String? = null,
+    val isScanningText: Boolean = false,
     val isFrozen: Boolean = false,
     val frozenBitmap: Bitmap? = null,
     val controlsExpanded: Boolean = false,
     val lastSavedUri: Uri? = null,
     val statusMessage: String? = null
-)
+) {
+    val hardwareZoom: Float
+        get() = zoomRatio.coerceIn(capabilities.minZoom, capabilities.maxHardwareZoom)
+
+    val digitalScale: Float
+        get() = (zoomRatio / hardwareZoom).coerceAtLeast(1f)
+
+    companion object {
+        const val MAX_TOTAL_ZOOM = 200f
+    }
+}
 
 class MagnifierViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -73,7 +87,7 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { state ->
             state.copy(
                 capabilities = capabilities,
-                zoomRatio = state.zoomRatio.coerceIn(capabilities.minZoom, capabilities.maxZoom),
+                zoomRatio = state.zoomRatio.coerceIn(capabilities.minZoom, state.maxTotalZoom),
                 exposureIndex = state.exposureIndex.coerceIn(capabilities.evMin, capabilities.evMax)
             )
         }
@@ -81,7 +95,7 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setZoomRatio(ratio: Float) {
         _uiState.update { state ->
-            val clamped = ratio.coerceIn(state.capabilities.minZoom, state.capabilities.maxZoom)
+            val clamped = ratio.coerceIn(state.capabilities.minZoom, state.maxTotalZoom)
             state.copy(zoomRatio = clamped)
         }
     }
@@ -152,6 +166,18 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun toggleClarityEnhance() {
+        _uiState.update { it.copy(clarityEnhanceEnabled = !it.clarityEnhanceEnabled) }
+    }
+
+    fun setScanningText(scanning: Boolean) {
+        _uiState.update { it.copy(isScanningText = scanning) }
+    }
+
+    fun setRecognizedText(text: String?) {
+        _uiState.update { it.copy(recognizedText = text, isScanningText = false) }
+    }
+
     fun updatePeakingBitmap(bitmap: Bitmap?) {
         val old = _peakingBitmap.value
         _peakingBitmap.value = bitmap
@@ -170,7 +196,7 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun unfreeze() {
         val old = _uiState.value.frozenBitmap
-        _uiState.update { it.copy(isFrozen = false, frozenBitmap = null) }
+        _uiState.update { it.copy(isFrozen = false, frozenBitmap = null, recognizedText = null) }
         if (old != null && !old.isRecycled) {
             old.recycle()
         }

@@ -5,7 +5,9 @@ A Native Android **Magnifying Glass & Digital Microscope** application built wit
 ## Features
 
 - **Multi-Lens Auto-Discovery**: Automatically detects rear physical and logical lenses (`Main`, `Macro`, `0.6x Wide`, `Tele`) via Camera2 characteristics.
-- **Precision Zoom**: Pinch-to-zoom, precision slider, and quick magnification presets (`1×`, `2×`, `5×`, `10×`).
+- **Precision 200× Hybrid Zoom**: Hardware optical/sensor zoom combined with smooth hybrid viewport magnification up to `200×` using a logarithmic precision slider and quick presets (`1×`, `5×`, `20×`, `50×`, `100×`, `200×`).
+- **On-Device Computational Clarity**: Uses **CameraX Extensions (`ExtensionMode.AUTO`)** where supported, `CAPTURE_MODE_MAXIMIZE_QUALITY`, and an on-device **AI Clarity** super-resolution ROI upscaler + edge-preserving unsharp mask (`SuperResolutionEnhancer`).
+- **Google ML Kit On-Device OCR**: Built-in `ML Kit OCR` scanner reads microscopic serial numbers, IC chip markings, and fine print directly on-device with one-tap clipboard copy.
 - **Tap-to-Focus & AF Lock**: Animated tap-to-focus reticle with an `AF LOCK` toggle to prevent focus hunting on close-up subjects.
 - **Manual Focus Distance**: Fine diopter slider (`CONTROL_AF_MODE_OFF` + `LENS_FOCUS_DISTANCE`) with approximate centimeter distance readout (`~cm` to `∞`).
 - **Illumination & Exposure**: Flashlight/torch toggle with Android 15+ variable torch strength slider (with graceful fallback on older devices) and Exposure Compensation (`EV`) slider.

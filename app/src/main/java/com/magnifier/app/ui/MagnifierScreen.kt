@@ -1,6 +1,7 @@
 package com.magnifier.app.ui
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
@@ -41,8 +42,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.GridOn
@@ -72,10 +77,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -86,11 +93,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,14 +109,21 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.magnifier.app.camera.CameraController
 import com.magnifier.app.camera.CameraLensInfo
 import com.magnifier.app.processing.InspectionFilter
+import com.magnifier.app.processing.SuperResolutionEnhancer
+import com.magnifier.app.processing.TextScanner
 import com.magnifier.app.storage.SnapshotRepository
 import com.magnifier.app.ui.theme.LoupeAmber
 import com.magnifier.app.ui.theme.LoupeCyan
 import com.magnifier.app.ui.theme.LoupeSurface
 import com.magnifier.app.ui.theme.LoupeSurfaceVariant
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private val GlassBorder = Color.White.copy(alpha = 0.14f)
@@ -117,6 +134,9 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val haptic = LocalHapticFeedback.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
     val state by viewModel.uiState.collectAsState()
     val peakingBitmap by viewModel.peakingBitmap.collectAsState()
 
@@ -136,7 +156,6 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
     var tapFocusPoint by remember { mutableStateOf<Offset?>(null) }
     val focusRingScale = remember { Animatable(1.35f) }
 
-    // Frozen image pan/zoom state
     var frozenScale by remember { mutableFloatStateOf(1f) }
     var frozenOffset by remember { mutableStateOf(Offset.Zero) }
 
@@ -178,8 +197,8 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
         )
     }
 
-    LaunchedEffect(state.zoomRatio) {
-        controller.setZoomRatio(state.zoomRatio)
+    LaunchedEffect(state.hardwareZoom) {
+        controller.setHardwareZoomRatio(state.hardwareZoom)
     }
     LaunchedEffect(state.manualFocusEnabled, state.focusDistanceDiopters, state.afLocked) {
         controller.applyFocusMode(
@@ -210,18 +229,39 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
         }
     }
 
+    fun processZoomedBitmap(raw: Bitmap, targetMaxDim: Int): Bitmap {
+        val dScale = state.digitalScale
+        return if (state.clarityEnhanceEnabled || dScale > 1.05f) {
+            SuperResolutionEnhancer.enhanceZoomedRegion(
+                source = raw,
+                digitalScale = dScale,
+                targetMaxDim = targetMaxDim,
+                sharpenStrength = if (state.clarityEnhanceEnabled) 0.70f else 0f
+            ).also { processed ->
+                if (processed !== raw) raw.recycle()
+            }
+        } else {
+            raw
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .clipToBounds()
     ) {
-        // 1. Live Camera Viewfinder
+        // 1. Live Camera Viewfinder with Hybrid 200x Scaling
         if (!state.isFrozen) {
             AndroidView(
                 factory = { previewView },
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(state.capabilities.minZoom, state.capabilities.maxZoom) {
+                    .graphicsLayer {
+                        scaleX = state.digitalScale
+                        scaleY = state.digitalScale
+                    }
+                    .pointerInput(state.capabilities.minZoom, state.maxTotalZoom) {
                         detectTransformGestures { _, _, zoom, _ ->
                             if (zoom != 1f) {
                                 viewModel.setZoomRatio(viewModel.uiState.value.zoomRatio * zoom)
@@ -243,7 +283,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
             )
         }
 
-        // 2. Frozen High-Res Frame with Pan & Zoom
+        // 2. Frozen Super-Res Frame with Pan & Zoom
         val frozenBmp = state.frozenBitmap
         if (state.isFrozen && frozenBmp != null) {
             Image(
@@ -285,7 +325,12 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 bitmap = peakBmp.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = state.digitalScale
+                        scaleY = state.digitalScale
+                    }
             )
         }
 
@@ -327,7 +372,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 )
         )
 
-        // 6. Top Floating HUD (Lenses, AF Lock, Zoom Readout)
+        // 6. Top Floating HUD
         TopLoupeBar(
             state = state,
             onSelectLens = {
@@ -345,7 +390,64 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         )
 
-        // 7. Bottom Glassmorphic Control Deck + Collapsible Inspector Drawer
+        // ML Kit Recognized Text / Serial Number Banner
+        state.recognizedText?.let { text ->
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = GlassBg,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 56.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth()
+                    .border(1.dp, LoupeCyan.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "ML KIT DETECTED TEXT",
+                            color = LoupeCyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = text.ifEmpty { "No readable text found in frame." },
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (text.isNotEmpty()) {
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString(text))
+                            viewModel.showMessage("Copied text to clipboard")
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy text",
+                                tint = LoupeCyan
+                            )
+                        }
+                    }
+                    IconButton(onClick = { viewModel.setRecognizedText(null) }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Dismiss OCR",
+                            tint = Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 7. Bottom Glassmorphic Control Deck
         Surface(
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             color = GlassBg,
@@ -378,13 +480,115 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                     )
                 }
 
-                // Filter & Overlay Chips
+                // Filter & On-Device AI Chips
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    FilterChip(
+                        selected = state.clarityEnhanceEnabled,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.toggleClarityEnhance()
+                        },
+                        label = { Text("AI Clarity", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
+                            labelColor = Color.White.copy(alpha = 0.85f),
+                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
+                            selectedLabelColor = LoupeCyan
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = state.clarityEnhanceEnabled,
+                            borderColor = GlassBorder,
+                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
+                        )
+                    )
+
+                    FilterChip(
+                        selected = state.isScanningText || state.recognizedText != null,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            val frozen = state.frozenBitmap
+                            if (state.isFrozen && frozen != null) {
+                                viewModel.setScanningText(true)
+                                TextScanner.recognizeText(
+                                    bitmap = frozen,
+                                    onResult = { viewModel.setRecognizedText(it) },
+                                    onError = {
+                                        viewModel.setScanningText(false)
+                                        viewModel.showMessage(it)
+                                    }
+                                )
+                            } else {
+                                viewModel.setScanningText(true)
+                                controller.captureBitmap(
+                                    onCaptured = { raw ->
+                                        scope.launch {
+                                            val enhanced = withContext(Dispatchers.Default) {
+                                                processZoomedBitmap(raw, targetMaxDim = 2048)
+                                            }
+                                            TextScanner.recognizeText(
+                                                bitmap = enhanced,
+                                                onResult = { text ->
+                                                    viewModel.setRecognizedText(text)
+                                                    enhanced.recycle()
+                                                },
+                                                onError = { err ->
+                                                    viewModel.setScanningText(false)
+                                                    viewModel.showMessage(err)
+                                                    enhanced.recycle()
+                                                }
+                                            )
+                                        }
+                                    },
+                                    onError = {
+                                        viewModel.setScanningText(false)
+                                        viewModel.showMessage(it)
+                                    }
+                                )
+                            }
+                        },
+                        label = {
+                            Text(
+                                if (state.isScanningText) "Scanning..." else "ML Kit OCR",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.DocumentScanner,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
+                            labelColor = Color.White.copy(alpha = 0.85f),
+                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
+                            selectedLabelColor = LoupeCyan
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = state.isScanningText || state.recognizedText != null,
+                            borderColor = GlassBorder,
+                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
+                        )
+                    )
+
                     InspectionFilter.entries.forEach { filter ->
                         val selected = state.activeFilter == filter
                         FilterChip(
@@ -471,12 +675,12 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Zoom Presets + Precision Slider
+                // Logarithmic 1x - 200x Zoom Presets + Precision Slider
                 if (!state.isFrozen) {
-                    ZoomControlRow(
+                    ZoomControlRow200x(
                         zoomRatio = state.zoomRatio,
                         minZoom = state.capabilities.minZoom,
-                        maxZoom = state.capabilities.maxZoom,
+                        maxZoom = state.maxTotalZoom,
                         onZoomChange = viewModel::setZoomRatio
                     )
                 } else {
@@ -507,7 +711,6 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Torch
                     val torchTint by animateColorAsState(
                         targetValue = if (state.torchEnabled) LoupeAmber else Color.White,
                         label = "torchTint"
@@ -539,7 +742,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }
                     }
 
-                    // Freeze / Unfreeze
+                    // Freeze / Unfreeze (with Super-Res Clarity)
                     Surface(
                         shape = CircleShape,
                         color = if (state.isFrozen) LoupeAmber else LoupeSurfaceVariant.copy(alpha = 0.85f),
@@ -553,7 +756,14 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                     viewModel.unfreeze()
                                 } else {
                                     controller.captureBitmap(
-                                        onCaptured = { viewModel.setFrozenBitmap(it) },
+                                        onCaptured = { raw ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBitmap(raw, targetMaxDim = 2048)
+                                                }
+                                                viewModel.setFrozenBitmap(enhanced)
+                                            }
+                                        },
                                         onError = { viewModel.showMessage(it) }
                                     )
                                 }
@@ -568,7 +778,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }
                     }
 
-                    // Concentric Pro Shutter Button
+                    // Concentric Pro Shutter Button (saves up to 4K/8K-class super-res ROI)
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -593,18 +803,23 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                     }
                                 } else {
                                     controller.captureBitmap(
-                                        onCaptured = { bmp ->
-                                            SnapshotRepository.saveToGallery(
-                                                context = context,
-                                                bitmap = bmp,
-                                                filter = state.activeFilter,
-                                                zoomRatio = state.zoomRatio
-                                            ).onSuccess { uri ->
-                                                viewModel.onSnapshotSaved(uri)
-                                            }.onFailure { err ->
-                                                viewModel.showMessage("Save failed: ${err.localizedMessage}")
+                                        onCaptured = { raw ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBitmap(raw, targetMaxDim = 3840)
+                                                }
+                                                SnapshotRepository.saveToGallery(
+                                                    context = context,
+                                                    bitmap = enhanced,
+                                                    filter = state.activeFilter,
+                                                    zoomRatio = state.zoomRatio
+                                                ).onSuccess { uri ->
+                                                    viewModel.onSnapshotSaved(uri)
+                                                }.onFailure { err ->
+                                                    viewModel.showMessage("Save failed: ${err.localizedMessage}")
+                                                }
+                                                enhanced.recycle()
                                             }
-                                            bmp.recycle()
                                         },
                                         onError = { viewModel.showMessage(it) }
                                     )
@@ -619,7 +834,6 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         )
                     }
 
-                    // Controls Drawer Toggle (Manual Focus / EV / Torch Strength)
                     Surface(
                         shape = CircleShape,
                         color = if (state.controlsExpanded) LoupeCyan.copy(alpha = 0.2f) else LoupeSurfaceVariant.copy(alpha = 0.6f),
@@ -644,7 +858,6 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }
                     }
 
-                    // Quick Share
                     Surface(
                         shape = CircleShape,
                         color = LoupeSurfaceVariant.copy(alpha = 0.6f),
@@ -677,17 +890,22 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                     context.startActivity(Intent.createChooser(shareIntent, "Share Snapshot"))
                                 } else {
                                     controller.captureBitmap(
-                                        onCaptured = { bmp ->
-                                            SnapshotRepository.createShareUri(context, bmp, state.activeFilter)
-                                                .onSuccess { uri ->
-                                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                        type = "image/jpeg"
-                                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    }
-                                                    context.startActivity(Intent.createChooser(shareIntent, "Share Inspection"))
+                                        onCaptured = { raw ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBitmap(raw, targetMaxDim = 2560)
                                                 }
-                                            bmp.recycle()
+                                                SnapshotRepository.createShareUri(context, enhanced, state.activeFilter)
+                                                    .onSuccess { uri ->
+                                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                            type = "image/jpeg"
+                                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                        }
+                                                        context.startActivity(Intent.createChooser(shareIntent, "Share Inspection"))
+                                                    }
+                                                enhanced.recycle()
+                                            }
                                         },
                                         onError = { viewModel.showMessage(it) }
                                     )
@@ -728,7 +946,6 @@ private fun TopLoupeBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Lens Selector Pills
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -762,7 +979,6 @@ private fun TopLoupeBar(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // AF Lock Pill
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = if (state.afLocked) LoupeAmber else GlassBg,
@@ -797,46 +1013,70 @@ private fun TopLoupeBar(
 
         Spacer(modifier = Modifier.width(6.dp))
 
-        // Monospace Zoom Readout Pill
         val displayZoom = if (state.isFrozen) state.zoomRatio * frozenScale else state.zoomRatio
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = GlassBg,
             modifier = Modifier.border(1.dp, LoupeCyan.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
         ) {
-            Text(
-                text = String.format(Locale.US, "%.1f×", displayZoom),
-                color = LoupeCyan,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-            )
+            ) {
+                if (state.clarityEnhanceEnabled || state.capabilities.computationalExtensionActive) {
+                    Text(
+                        text = "AI ",
+                        color = LoupeAmber,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+                Text(
+                    text = if (displayZoom >= 20f) {
+                        String.format(Locale.US, "%.0f×", displayZoom)
+                    } else {
+                        String.format(Locale.US, "%.1f×", displayZoom)
+                    },
+                    color = LoupeCyan,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ZoomControlRow(
+private fun ZoomControlRow200x(
     zoomRatio: Float,
     minZoom: Float,
     maxZoom: Float,
     onZoomChange: (Float) -> Unit
 ) {
-    val presets = listOf(1f, 2f, 5f, 10f).filter { it in minZoom..maxZoom }
+    val presets = listOf(1f, 5f, 20f, 50f, 100f, 200f).filter { it in minZoom..maxZoom }
+
+    // Logarithmic mapping so 1x..10x has fine precision while reaching 200x smoothly
+    val safeMin = minZoom.coerceAtLeast(0.5f)
+    val logRange = ln((maxZoom / safeMin).toDouble()).toFloat().coerceAtLeast(0.01f)
+    val sliderProgress = (ln((zoomRatio.coerceIn(safeMin, maxZoom) / safeMin).toDouble()).toFloat() / logRange)
+        .coerceIn(0f, 1f)
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             presets.forEach { preset ->
-                val isClose = abs(zoomRatio - preset) < 0.25f
+                val isClose = abs(zoomRatio - preset) / preset < 0.12f
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = if (isClose) LoupeCyan.copy(alpha = 0.22f) else LoupeSurfaceVariant.copy(alpha = 0.55f),
                     modifier = Modifier
-                        .padding(horizontal = 4.dp)
+                        .padding(horizontal = 3.dp)
                         .border(
                             1.dp,
                             if (isClose) LoupeCyan.copy(alpha = 0.65f) else GlassBorder,
@@ -849,18 +1089,21 @@ private fun ZoomControlRow(
                         text = "${preset.toInt()}×",
                         color = if (isClose) LoupeCyan else Color.White,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
             }
         }
 
         Slider(
-            value = zoomRatio.coerceIn(minZoom, maxZoom),
-            onValueChange = onZoomChange,
-            valueRange = minZoom..maxZoom.coerceAtLeast(minZoom + 0.1f),
+            value = sliderProgress,
+            onValueChange = { p ->
+                val mappedZoom = safeMin * kotlin.math.E.pow((p * logRange).toDouble()).toFloat()
+                onZoomChange(mappedZoom.coerceIn(minZoom, maxZoom))
+            },
+            valueRange = 0f..1f,
             colors = SliderDefaults.colors(
                 thumbColor = LoupeCyan,
                 activeTrackColor = LoupeCyan,
