@@ -48,6 +48,7 @@ data class MagnifierUiState(
     val isFrozen: Boolean = false,
     val frozenBitmap: Bitmap? = null,
     val controlsExpanded: Boolean = false,
+    val showUseCasesDialog: Boolean = false,
     val lastSavedUri: Uri? = null,
     val statusMessage: String? = null
 ) {
@@ -270,6 +271,26 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleControlsDrawer() {
         _uiState.update { it.copy(controlsExpanded = !it.controlsExpanded) }
+    }
+
+    fun setShowUseCasesDialog(show: Boolean) {
+        _uiState.update { it.copy(showUseCasesDialog = show) }
+    }
+
+    fun applyUseCasePreset(
+        filter: InspectionFilter,
+        enableTorch: Boolean,
+        targetZoom: Float
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                activeFilter = filter,
+                torchEnabled = if (enableTorch && state.capabilities.hasFlash) true else state.torchEnabled,
+                zoomRatio = targetZoom.coerceIn(state.capabilities.minZoom, state.maxTotalZoom),
+                showUseCasesDialog = false,
+                statusMessage = "Preset applied (${filter.label}, ${targetZoom.toInt()}×)"
+            )
+        }
     }
 
     fun onSnapshotSaved(uri: Uri) {

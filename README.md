@@ -23,6 +23,17 @@ A Native Android **Magnifying Glass & Digital Microscope** application built wit
 - **Measurement Reticle & Grid**: Toggleable crosshair and reference grid overlay.
 - **Capture & Quick Share**: Save full-resolution snapshots (with active filter baked in) to `Pictures/Magnifier` via `MediaStore`, or share directly via `FileProvider`.
 
+## Ideal Use Cases & Recommended Tools
+
+| Use Case | What to Inspect | Recommended Tools |
+| :--- | :--- | :--- |
+| **Electronics & PCBs** | Solder bridges, lifted SMD pads, hairline trace cracks, laser-etched IC markings | `Macro` lens + `Torch` + `Invert` filter + `OCR` + `Barcode` (DataMatrix/QR) |
+| **Serial Numbers & Fine Print** | Watch/jewelry serials, SIM trays, cables, medicine labels, imported hardware | `5×–50×` zoom + `AI Clarity` + `AF LOCK` + Multi-Script `OCR` + `Entity Extraction` |
+| **First Aid & Skin** | Tiny splinters, glass shards, thorns, ticks | `Torch` + `Freeze Frame` (`8×` pan/zoom) + `Manual Focus` + `Peaking` |
+| **Gardening & Pests** | Leaf undersides, spider mites, aphids, fungal spores, leaf-vein damage | `Smart Preset` + `Contrast` + `Objects` (auto-focus) + `Isolate` |
+| **Coins, Gems & Collectibles** | Mint marks, hallmarks, gemstone inclusions, watch movements, micro-printing | `EV` slider + `Grid` reticle + `Isolate` + `5×+` super-res `Capture` |
+| **Textiles & Print Quality** | Fabric weave density, stitching, 3D-print layer lines, halftone/pixel grids | `Macro` lens + `Contrast` / `Mono` + `Freeze Frame` pan/zoom |
+
 ## Architecture
 
 ```text

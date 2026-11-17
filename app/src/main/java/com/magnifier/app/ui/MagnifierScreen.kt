@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
@@ -110,6 +112,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.magnifier.app.camera.CameraController
 import com.magnifier.app.camera.CameraLensInfo
@@ -455,12 +458,26 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 viewModel.toggleAfLock()
             },
+            onOpenUseCases = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                viewModel.setShowUseCasesDialog(true)
+            },
             frozenScale = frozenScale,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         )
+
+        if (state.showUseCasesDialog) {
+            UseCasesDialog(
+                onDismiss = { viewModel.setShowUseCasesDialog(false) },
+                onApplyPreset = { filter, torch, zoom ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.applyUseCasePreset(filter, torch, zoom)
+                }
+            )
+        }
 
         // Floating ML Kit Result Cards Stack (OCR + Entities, Barcodes, Smart Preset)
         Column(
@@ -1301,6 +1318,7 @@ private fun TopLoupeBar(
     state: MagnifierUiState,
     onSelectLens: (CameraLensInfo) -> Unit,
     onToggleAfLock: () -> Unit,
+    onOpenUseCases: () -> Unit,
     frozenScale: Float,
     modifier: Modifier = Modifier
 ) {
@@ -1411,6 +1429,27 @@ private fun TopLoupeBar(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        Surface(
+            shape = CircleShape,
+            color = GlassBg,
+            modifier = Modifier
+                .size(30.dp)
+                .border(1.dp, GlassBorder, CircleShape)
+                .clip(CircleShape)
+                .clickable { onOpenUseCases() }
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Default.HelpOutline,
+                    contentDescription = "Use cases and best tools",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
@@ -1656,5 +1695,174 @@ private fun ReticleGridOverlay(modifier: Modifier = Modifier) {
         )
         drawLine(reticleColor, Offset(cx - arm, cy), Offset(cx + arm, cy), strokeWidth = 2f)
         drawLine(reticleColor, Offset(cx, cy - arm), Offset(cx, cy + arm), strokeWidth = 2f)
+    }
+}
+
+private data class UseCaseGuideItem(
+    val title: String,
+    val description: String,
+    val bestTools: String,
+    val presetFilter: InspectionFilter,
+    val presetTorch: Boolean,
+    val presetZoom: Float
+)
+
+private val UseCaseGuideItems = listOf(
+    UseCaseGuideItem(
+        title = "Electronics & PCBs",
+        description = "Inspect solder bridges, lifted SMD pads, hairline trace cracks, and laser-etched IC markings.",
+        bestTools = "Macro lens · Torch · Invert · OCR · Barcode",
+        presetFilter = InspectionFilter.NEGATIVE,
+        presetTorch = true,
+        presetZoom = 10f
+    ),
+    UseCaseGuideItem(
+        title = "Serial Numbers & Fine Print",
+        description = "Read watch/jewelry serials, SIM trays, cables, medicine bottles, and imported hardware.",
+        bestTools = "5×–50× AI Clarity · AF LOCK · Multi-Script OCR · Entities",
+        presetFilter = InspectionFilter.HIGH_CONTRAST,
+        presetTorch = true,
+        presetZoom = 15f
+    ),
+    UseCaseGuideItem(
+        title = "First Aid & Skin Inspection",
+        description = "Locate tiny splinters, glass shards, thorns, or ticks with a steady paused viewport.",
+        bestTools = "Torch · Freeze Frame (8× pan) · Manual Focus · Peaking",
+        presetFilter = InspectionFilter.NORMAL,
+        presetTorch = true,
+        presetZoom = 8f
+    ),
+    UseCaseGuideItem(
+        title = "Gardening, Leaves & Pests",
+        description = "Check leaf undersides for spider mites, aphids, fungal spores, and vein damage.",
+        bestTools = "Smart Preset · Contrast · Objects (auto-focus) · Isolate",
+        presetFilter = InspectionFilter.HIGH_CONTRAST,
+        presetTorch = false,
+        presetZoom = 10f
+    ),
+    UseCaseGuideItem(
+        title = "Coins, Gems & Collectibles",
+        description = "Examine mint marks, hallmarks, gemstone inclusions, watch movements, and micro-print.",
+        bestTools = "EV Slider · Grid Reticle · Isolate · 5×+ Capture",
+        presetFilter = InspectionFilter.NORMAL,
+        presetTorch = false,
+        presetZoom = 12f
+    ),
+    UseCaseGuideItem(
+        title = "Textiles & Print Quality",
+        description = "Inspect fabric weave density, stitching, 3D-print layer lines, and pixel/halftone grids.",
+        bestTools = "Macro lens · Contrast / Mono · Freeze Frame",
+        presetFilter = InspectionFilter.GRAYSCALE,
+        presetTorch = true,
+        presetZoom = 10f
+    )
+)
+
+@Composable
+private fun UseCasesDialog(
+    onDismiss: () -> Unit,
+    onApplyPreset: (InspectionFilter, Boolean, Float) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = LoupeSurface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, GlassBorder, RoundedCornerShape(22.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(18.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "IDEAL USE CASES",
+                            color = LoupeCyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.9.sp
+                        )
+                        Text(
+                            text = "Best Tools & Quick Presets",
+                            color = Color.White,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close use cases",
+                            tint = Color.White.copy(alpha = 0.75f)
+                        )
+                    }
+                }
+
+                UseCaseGuideItems.forEach { item ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = LoupeSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, GlassBorder, RoundedCornerShape(14.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = item.title,
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = LoupeCyan.copy(alpha = 0.2f),
+                                    modifier = Modifier
+                                        .border(1.dp, LoupeCyan.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            onApplyPreset(item.presetFilter, item.presetTorch, item.presetZoom)
+                                        }
+                                ) {
+                                    Text(
+                                        text = "Use Preset",
+                                        color = LoupeCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = item.description,
+                                color = Color.White.copy(alpha = 0.78f),
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Best tools: ${item.bestTools}",
+                                color = LoupeAmber,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
