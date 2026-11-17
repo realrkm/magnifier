@@ -6,7 +6,7 @@ A Native Android **Magnifying Glass & Digital Microscope** application built wit
 
 - **Multi-Lens Auto-Discovery**: Automatically detects rear physical and logical lenses (`Main`, `Macro`, `0.6x Wide`, `Tele`) via Camera2 characteristics.
 - **Precision 200× Hybrid Zoom**: Hardware optical/sensor zoom combined with smooth hybrid viewport magnification up to `200×` using a logarithmic precision slider and quick presets (`1×`, `5×`, `20×`, `50×`, `100×`, `200×`).
-- **On-Device Computational Clarity**: Uses **CameraX Extensions (`ExtensionMode.AUTO`)** where supported, `CAPTURE_MODE_MAXIMIZE_QUALITY`, and an on-device **AI Clarity** super-resolution ROI upscaler + edge-preserving unsharp mask (`SuperResolutionEnhancer`).
+- **On-Device Computational Clarity (`5×+` Ultra Clarity)**: Automatically engages Camera2 `EDGE_MODE_HIGH_QUALITY` & `NOISE_REDUCTION_MODE_HIGH_QUALITY`, live micro-contrast enhancement, **CameraX Extensions (`ExtensionMode.AUTO`)**, and a **3-frame temporal-averaging super-resolution burst** (`SuperResolutionEnhancer.mergeMultiFrameAndEnhance`) when freezing or capturing at `5×`–`200×`.
 - **Google ML Kit On-Device OCR**: Built-in `ML Kit OCR` scanner reads microscopic serial numbers, IC chip markings, and fine print directly on-device with one-tap clipboard copy.
 - **Tap-to-Focus & AF Lock**: Animated tap-to-focus reticle with an `AF LOCK` toggle to prevent focus hunting on close-up subjects.
 - **Manual Focus Distance**: Fine diopter slider (`CONTROL_AF_MODE_OFF` + `LENS_FOCUS_DISTANCE`) with approximate centimeter distance readout (`~cm` to `∞`).

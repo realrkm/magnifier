@@ -200,11 +200,18 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
     LaunchedEffect(state.hardwareZoom) {
         controller.setHardwareZoomRatio(state.hardwareZoom)
     }
-    LaunchedEffect(state.manualFocusEnabled, state.focusDistanceDiopters, state.afLocked) {
-        controller.applyFocusMode(
+    val isHighZoomClarity = state.zoomRatio >= 5f && state.clarityEnhanceEnabled
+    LaunchedEffect(
+        state.manualFocusEnabled,
+        state.focusDistanceDiopters,
+        state.afLocked,
+        isHighZoomClarity
+    ) {
+        controller.syncCamera2Options(
             manualMode = state.manualFocusEnabled,
             focusDistanceDiopters = state.focusDistanceDiopters,
-            afLocked = state.afLocked
+            afLocked = state.afLocked,
+            highZoomClarity = isHighZoomClarity
         )
     }
     LaunchedEffect(state.torchEnabled, state.torchStrength, state.activeLens?.cameraId) {
@@ -218,32 +225,60 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
         controller.setExposureCompensation(state.exposureIndex)
     }
 
-    LaunchedEffect(state.activeFilter) {
-        if (state.activeFilter == InspectionFilter.NORMAL) {
+    LaunchedEffect(state.activeFilter, isHighZoomClarity) {
+        if (state.activeFilter == InspectionFilter.NORMAL && !isHighZoomClarity) {
             previewView.setLayerType(View.LAYER_TYPE_NONE, null)
         } else {
+            val matrix = if (state.activeFilter != InspectionFilter.NORMAL) {
+                state.activeFilter.toColorMatrixArray()
+            } else {
+                // Subtle micro-contrast clarity boost for 5x+ live inspection
+                val c = 1.18f
+                val t = (-0.5f * c + 0.5f) * 255f
+                floatArrayOf(
+                    c, 0f, 0f, 0f, t,
+                    0f, c, 0f, 0f, t,
+                    0f, 0f, c, 0f, t,
+                    0f, 0f, 0f, 1f, 0f
+                )
+            }
             val paint = Paint().apply {
-                colorFilter = ColorMatrixColorFilter(ColorMatrix(state.activeFilter.toColorMatrixArray()))
+                colorFilter = ColorMatrixColorFilter(ColorMatrix(matrix))
             }
             previewView.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
         }
     }
 
-    fun processZoomedBitmap(raw: Bitmap, targetMaxDim: Int): Bitmap {
+    fun processZoomedBurst(frames: List<Bitmap>, targetMaxDim: Int): Bitmap {
         val dScale = state.digitalScale
-        return if (state.clarityEnhanceEnabled || dScale > 1.05f) {
-            SuperResolutionEnhancer.enhanceZoomedRegion(
-                source = raw,
+        return if (frames.size > 1 && isHighZoomClarity) {
+            SuperResolutionEnhancer.mergeMultiFrameAndEnhance(
+                frames = frames,
                 digitalScale = dScale,
                 targetMaxDim = targetMaxDim,
-                sharpenStrength = if (state.clarityEnhanceEnabled) 0.70f else 0f
-            ).also { processed ->
-                if (processed !== raw) raw.recycle()
+                sharpenStrength = 0.85f
+            ).also {
+                frames.forEach { f -> f.recycle() }
             }
         } else {
-            raw
+            val raw = frames.first()
+            if (state.clarityEnhanceEnabled || dScale > 1.05f) {
+                SuperResolutionEnhancer.enhanceZoomedRegion(
+                    source = raw,
+                    digitalScale = dScale,
+                    targetMaxDim = targetMaxDim,
+                    sharpenStrength = if (state.clarityEnhanceEnabled) 0.70f else 0f
+                ).also { processed ->
+                    if (processed !== raw) raw.recycle()
+                }
+            } else {
+                raw
+            }
         }
     }
+
+    fun processZoomedBitmap(raw: Bitmap, targetMaxDim: Int): Bitmap =
+        processZoomedBurst(listOf(raw), targetMaxDim)
 
     Box(
         modifier = Modifier
@@ -742,7 +777,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }
                     }
 
-                    // Freeze / Unfreeze (with Super-Res Clarity)
+                    // Freeze / Unfreeze (uses 3-frame super-res burst at 5x+ zoom)
                     Surface(
                         shape = CircleShape,
                         color = if (state.isFrozen) LoupeAmber else LoupeSurfaceVariant.copy(alpha = 0.85f),
@@ -754,6 +789,19 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 if (state.isFrozen) {
                                     viewModel.unfreeze()
+                                } else if (isHighZoomClarity) {
+                                    controller.captureBurstBitmaps(
+                                        count = 3,
+                                        onCaptured = { frames ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBurst(frames, targetMaxDim = 2048)
+                                                }
+                                                viewModel.setFrozenBitmap(enhanced)
+                                            }
+                                        },
+                                        onError = { viewModel.showMessage(it) }
+                                    )
                                 } else {
                                     controller.captureBitmap(
                                         onCaptured = { raw ->
@@ -801,6 +849,29 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                     }.onFailure { err ->
                                         viewModel.showMessage("Save failed: ${err.localizedMessage}")
                                     }
+                                } else if (isHighZoomClarity) {
+                                    controller.captureBurstBitmaps(
+                                        count = 3,
+                                        onCaptured = { frames ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBurst(frames, targetMaxDim = 3840)
+                                                }
+                                                SnapshotRepository.saveToGallery(
+                                                    context = context,
+                                                    bitmap = enhanced,
+                                                    filter = state.activeFilter,
+                                                    zoomRatio = state.zoomRatio
+                                                ).onSuccess { uri ->
+                                                    viewModel.onSnapshotSaved(uri)
+                                                }.onFailure { err ->
+                                                    viewModel.showMessage("Save failed: ${err.localizedMessage}")
+                                                }
+                                                enhanced.recycle()
+                                            }
+                                        },
+                                        onError = { viewModel.showMessage(it) }
+                                    )
                                 } else {
                                     controller.captureBitmap(
                                         onCaptured = { raw ->
@@ -888,6 +959,28 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
                                     context.startActivity(Intent.createChooser(shareIntent, "Share Snapshot"))
+                                } else if (isHighZoomClarity) {
+                                    controller.captureBurstBitmaps(
+                                        count = 3,
+                                        onCaptured = { frames ->
+                                            scope.launch {
+                                                val enhanced = withContext(Dispatchers.Default) {
+                                                    processZoomedBurst(frames, targetMaxDim = 2560)
+                                                }
+                                                SnapshotRepository.createShareUri(context, enhanced, state.activeFilter)
+                                                    .onSuccess { uri ->
+                                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                            type = "image/jpeg"
+                                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                        }
+                                                        context.startActivity(Intent.createChooser(shareIntent, "Share Inspection"))
+                                                    }
+                                                enhanced.recycle()
+                                            }
+                                        },
+                                        onError = { viewModel.showMessage(it) }
+                                    )
                                 } else {
                                     controller.captureBitmap(
                                         onCaptured = { raw ->
@@ -1023,7 +1116,14 @@ private fun TopLoupeBar(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                if (state.clarityEnhanceEnabled || state.capabilities.computationalExtensionActive) {
+                if (state.zoomRatio >= 5f && state.clarityEnhanceEnabled) {
+                    Text(
+                        text = "5×+ AI ",
+                        color = LoupeAmber,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                } else if (state.clarityEnhanceEnabled || state.capabilities.computationalExtensionActive) {
                     Text(
                         text = "AI ",
                         color = LoupeAmber,

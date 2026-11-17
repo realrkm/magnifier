@@ -220,11 +220,18 @@ class CameraController(private val context: Context) {
         cam.cameraControl.startFocusAndMetering(builder.build())
     }
 
-    fun applyFocusMode(manualMode: Boolean, focusDistanceDiopters: Float, afLocked: Boolean) {
+    fun syncCamera2Options(
+        manualMode: Boolean,
+        focusDistanceDiopters: Float,
+        afLocked: Boolean,
+        highZoomClarity: Boolean
+    ) {
         val cam = camera ?: return
         val cam2Control = Camera2CameraControl.from(cam.cameraControl)
-        val options = if (manualMode) {
-            CaptureRequestOptions.Builder()
+        val builder = CaptureRequestOptions.Builder()
+
+        if (manualMode) {
+            builder
                 .setCaptureRequestOption(
                     CaptureRequest.CONTROL_AF_MODE,
                     CaptureRequest.CONTROL_AF_MODE_OFF
@@ -233,23 +240,41 @@ class CameraController(private val context: Context) {
                     CaptureRequest.LENS_FOCUS_DISTANCE,
                     focusDistanceDiopters.coerceAtLeast(0f)
                 )
-                .build()
         } else if (afLocked) {
-            CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_AUTO
-                )
-                .build()
+            builder.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_AUTO
+            )
         } else {
-            CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                )
-                .build()
+            builder.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            )
         }
-        cam2Control.setCaptureRequestOptions(options)
+
+        if (highZoomClarity) {
+            builder
+                .setCaptureRequestOption(
+                    CaptureRequest.EDGE_MODE,
+                    CaptureRequest.EDGE_MODE_HIGH_QUALITY
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.NOISE_REDUCTION_MODE,
+                    CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                )
+        } else {
+            builder
+                .setCaptureRequestOption(
+                    CaptureRequest.EDGE_MODE,
+                    CaptureRequest.EDGE_MODE_FAST
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.NOISE_REDUCTION_MODE,
+                    CaptureRequest.NOISE_REDUCTION_MODE_FAST
+                )
+        }
+
+        cam2Control.setCaptureRequestOptions(builder.build())
     }
 
     fun setExposureCompensation(index: Int) {
@@ -270,6 +295,41 @@ class CameraController(private val context: Context) {
                 .build()
             cam2Control.setCaptureRequestOptions(options)
         }
+    }
+
+    /**
+     * Captures a short burst of [count] frames sequentially for multi-frame super-resolution
+     * temporal denoising at 5x+ magnification.
+     */
+    fun captureBurstBitmaps(
+        count: Int = 3,
+        onCaptured: (List<Bitmap>) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val targetCount = count.coerceIn(1, 5)
+        val collected = mutableListOf<Bitmap>()
+
+        fun takeNext() {
+            captureBitmap(
+                onCaptured = { bmp ->
+                    collected.add(bmp)
+                    if (collected.size >= targetCount) {
+                        onCaptured(collected)
+                    } else {
+                        takeNext()
+                    }
+                },
+                onError = { err ->
+                    if (collected.isNotEmpty()) {
+                        onCaptured(collected)
+                    } else {
+                        onError(err)
+                    }
+                }
+            )
+        }
+
+        takeNext()
     }
 
     fun captureBitmap(

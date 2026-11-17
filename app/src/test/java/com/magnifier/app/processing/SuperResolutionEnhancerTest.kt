@@ -36,4 +36,16 @@ class SuperResolutionEnhancerTest {
         val afterBrightEdge = (sharpened[2 * width + 2] ushr 16) and 0xFF
         assertTrue(afterBrightEdge >= beforeBrightEdge)
     }
+
+    @Test
+    fun `temporalAveragePixels reduces per-pixel noise across frames`() {
+        val frame1 = intArrayOf(0xFF646464.toInt(), 0xFF102030.toInt())
+        val frame2 = intArrayOf(0xFF787878.toInt(), 0xFF304050.toInt())
+        val frame3 = intArrayOf(0xFF8C8C8C.toInt(), 0xFF203040.toInt())
+
+        val avg = SuperResolutionEnhancer.temporalAveragePixels(listOf(frame1, frame2, frame3))
+
+        assertEquals(0xFF787878.toInt(), avg[0])
+        assertEquals(0xFF203040.toInt(), avg[1])
+    }
 }
