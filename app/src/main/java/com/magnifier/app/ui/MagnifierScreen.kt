@@ -472,9 +472,15 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
         if (state.showUseCasesDialog) {
             UseCasesDialog(
                 onDismiss = { viewModel.setShowUseCasesDialog(false) },
-                onApplyPreset = { filter, torch, zoom ->
+                onApplyPreset = { item ->
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.applyUseCasePreset(filter, torch, zoom)
+                    viewModel.applyUseCasePreset(
+                        filter = item.presetFilter,
+                        enableTorch = item.presetTorch,
+                        targetZoom = item.presetZoom,
+                        enableGrid = item.presetGrid,
+                        enablePeaking = item.presetPeaking
+                    )
                 }
             )
         }
@@ -1704,10 +1710,22 @@ private data class UseCaseGuideItem(
     val bestTools: String,
     val presetFilter: InspectionFilter,
     val presetTorch: Boolean,
-    val presetZoom: Float
+    val presetZoom: Float,
+    val presetGrid: Boolean = false,
+    val presetPeaking: Boolean = false
 )
 
 private val UseCaseGuideItems = listOf(
+    UseCaseGuideItem(
+        title = "Vehicle Paint & Dent Inspection",
+        description = "Spot shallow hail dings, door dents (at a 15°–30° grazing angle), stone chips, and clearcoat scratches.",
+        bestTools = "2×–5× Zoom · Contrast · Grid · Peaking · Lower EV",
+        presetFilter = InspectionFilter.HIGH_CONTRAST,
+        presetTorch = false,
+        presetZoom = 3f,
+        presetGrid = true,
+        presetPeaking = true
+    ),
     UseCaseGuideItem(
         title = "Electronics & PCBs",
         description = "Inspect solder bridges, lifted SMD pads, hairline trace cracks, and laser-etched IC markings.",
@@ -1761,7 +1779,7 @@ private val UseCaseGuideItems = listOf(
 @Composable
 private fun UseCasesDialog(
     onDismiss: () -> Unit,
-    onApplyPreset: (InspectionFilter, Boolean, Float) -> Unit
+    onApplyPreset: (UseCaseGuideItem) -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -1834,7 +1852,7 @@ private fun UseCasesDialog(
                                         .border(1.dp, LoupeCyan.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
                                         .clip(RoundedCornerShape(10.dp))
                                         .clickable {
-                                            onApplyPreset(item.presetFilter, item.presetTorch, item.presetZoom)
+                                            onApplyPreset(item)
                                         }
                                 ) {
                                     Text(

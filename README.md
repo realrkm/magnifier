@@ -28,6 +28,7 @@ A Native Android **Magnifying Glass & Digital Microscope** application built wit
 | Use Case | What to Inspect | Recommended Tools |
 | :--- | :--- | :--- |
 | **Electronics & PCBs** | Solder bridges, lifted SMD pads, hairline trace cracks, laser-etched IC markings | `Macro` lens + `Torch` + `Invert` filter + `OCR` + `Barcode` (DataMatrix/QR) |
+| **Vehicle Paint & Dents** | Shallow hail dings, door dents (15°–30° grazing angle), stone chips, clearcoat scratches | `2×–5×` zoom + `Contrast` + `Grid` + `Peaking` + lower `EV` |
 | **Serial Numbers & Fine Print** | Watch/jewelry serials, SIM trays, cables, medicine labels, imported hardware | `5×–50×` zoom + `AI Clarity` + `AF LOCK` + Multi-Script `OCR` + `Entity Extraction` |
 | **First Aid & Skin** | Tiny splinters, glass shards, thorns, ticks | `Torch` + `Freeze Frame` (`8×` pan/zoom) + `Manual Focus` + `Peaking` |
 | **Gardening & Pests** | Leaf undersides, spider mites, aphids, fungal spores, leaf-vein damage | `Smart Preset` + `Contrast` + `Objects` (auto-focus) + `Isolate` |

@@ -280,13 +280,17 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
     fun applyUseCasePreset(
         filter: InspectionFilter,
         enableTorch: Boolean,
-        targetZoom: Float
+        targetZoom: Float,
+        enableGrid: Boolean = false,
+        enablePeaking: Boolean = false
     ) {
         _uiState.update { state ->
             state.copy(
                 activeFilter = filter,
                 torchEnabled = if (enableTorch && state.capabilities.hasFlash) true else state.torchEnabled,
                 zoomRatio = targetZoom.coerceIn(state.capabilities.minZoom, state.maxTotalZoom),
+                showGrid = enableGrid,
+                focusPeakingEnabled = enablePeaking,
                 showUseCasesDialog = false,
                 statusMessage = "Preset applied (${filter.label}, ${targetZoom.toInt()}×)"
             )
