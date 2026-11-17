@@ -7,7 +7,13 @@ A Native Android **Magnifying Glass & Digital Microscope** application built wit
 - **Multi-Lens Auto-Discovery**: Automatically detects rear physical and logical lenses (`Main`, `Macro`, `0.6x Wide`, `Tele`) via Camera2 characteristics.
 - **Precision 200× Hybrid Zoom**: Hardware optical/sensor zoom combined with smooth hybrid viewport magnification up to `200×` using a logarithmic precision slider and quick presets (`1×`, `5×`, `20×`, `50×`, `100×`, `200×`).
 - **On-Device Computational Clarity (`5×+` Ultra Clarity)**: Automatically engages Camera2 `EDGE_MODE_HIGH_QUALITY` & `NOISE_REDUCTION_MODE_HIGH_QUALITY`, live micro-contrast enhancement, **CameraX Extensions (`ExtensionMode.AUTO`)**, and a **3-frame temporal-averaging super-resolution burst** (`SuperResolutionEnhancer.mergeMultiFrameAndEnhance`) when freezing or capturing at `5×`–`200×`.
-- **Google ML Kit On-Device OCR**: Built-in `ML Kit OCR` scanner reads microscopic serial numbers, IC chip markings, and fine print directly on-device with one-tap clipboard copy.
+- **Google ML Kit On-Device Suite**:
+  - **Multi-Script OCR (`TextScanner`)**: Reads microscopic serial numbers and chip markings across **Latin, Chinese, Japanese, Korean, and Devanagari** scripts with one-tap clipboard copy.
+  - **Entity Extraction (`EntityExtractorHelper`)**: Automatically parses URLs, emails, phone numbers, tracking numbers, and dates from OCR results into copyable chips.
+  - **Micro-Barcode & DataMatrix Scanner (`BarcodeScanner`)**: Decodes tiny DataMatrix, QR, Aztec, Code128, and EAN/UPC codes under magnification.
+  - **Object Detection & Auto-Focus (`ObjectDetectorHelper`)**: Draws bounding boxes around detected specimens/components and auto-focuses on the primary target.
+  - **Smart Scene Presets (`SmartPresetLabeler`)**: Uses ML Kit Image Labeling to suggest optimal inspection filters and torch settings for circuits, plants, insects, or textiles.
+  - **Specimen Isolation (`SubjectIsolator`)**: Uses ML Kit Subject Segmentation to dim and desaturate the background while keeping the foreground specimen in sharp focus.
 - **Tap-to-Focus & AF Lock**: Animated tap-to-focus reticle with an `AF LOCK` toggle to prevent focus hunting on close-up subjects.
 - **Manual Focus Distance**: Fine diopter slider (`CONTROL_AF_MODE_OFF` + `LENS_FOCUS_DISTANCE`) with approximate centimeter distance readout (`~cm` to `∞`).
 - **Illumination & Exposure**: Flashlight/torch toggle with Android 15+ variable torch strength slider (with graceful fallback on older devices) and Exposure Compensation (`EV`) slider.

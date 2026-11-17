@@ -43,11 +43,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.FilterCenterFocus
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.GridOn
@@ -55,6 +58,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.FilterChip
@@ -84,6 +88,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -108,7 +113,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.magnifier.app.camera.CameraController
 import com.magnifier.app.camera.CameraLensInfo
+import com.magnifier.app.processing.BarcodeScanner
+import com.magnifier.app.processing.DetectedObjectBox
+import com.magnifier.app.processing.EntityExtractorHelper
 import com.magnifier.app.processing.InspectionFilter
+import com.magnifier.app.processing.ObjectDetectorHelper
+import com.magnifier.app.processing.SmartPresetLabeler
+import com.magnifier.app.processing.SubjectIsolator
 import com.magnifier.app.processing.SuperResolutionEnhancer
 import com.magnifier.app.processing.TextScanner
 import com.magnifier.app.storage.SnapshotRepository
@@ -232,7 +243,6 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
             val matrix = if (state.activeFilter != InspectionFilter.NORMAL) {
                 state.activeFilter.toColorMatrixArray()
             } else {
-                // Subtle micro-contrast clarity boost for 5x+ live inspection
                 val c = 1.18f
                 val t = (-0.5f * c + 0.5f) * 255f
                 floatArrayOf(
@@ -280,6 +290,25 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
     fun processZoomedBitmap(raw: Bitmap, targetMaxDim: Int): Bitmap =
         processZoomedBurst(listOf(raw), targetMaxDim)
 
+    fun withCurrentZoomedFrame(targetMaxDim: Int = 2048, onBitmapReady: (Bitmap, Boolean) -> Unit) {
+        val frozen = state.frozenBitmap
+        if (state.isFrozen && frozen != null) {
+            onBitmapReady(frozen, false)
+        } else {
+            controller.captureBitmap(
+                onCaptured = { raw ->
+                    scope.launch {
+                        val enhanced = withContext(Dispatchers.Default) {
+                            processZoomedBitmap(raw, targetMaxDim = targetMaxDim)
+                        }
+                        onBitmapReady(enhanced, true)
+                    }
+                },
+                onError = { viewModel.showMessage(it) }
+            )
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -318,7 +347,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
             )
         }
 
-        // 2. Frozen Super-Res Frame with Pan & Zoom
+        // 2. Frozen Super-Res / Isolated Frame with Pan & Zoom
         val frozenBmp = state.frozenBitmap
         if (state.isFrozen && frozenBmp != null) {
             Image(
@@ -369,12 +398,20 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
             )
         }
 
-        // 4. Measurement Reticle & Reference Grid Overlay
+        // 4. ML Kit Detected Object Bounding Boxes
+        if (state.detectedObjects.isNotEmpty()) {
+            DetectedObjectsOverlay(
+                boxes = state.detectedObjects,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // 5. Measurement Reticle & Reference Grid Overlay
         if (state.showGrid) {
             ReticleGridOverlay(modifier = Modifier.fillMaxSize())
         }
 
-        // 5. Animated Tap-to-Focus Ring
+        // 6. Animated Tap-to-Focus Ring
         tapFocusPoint?.let { point ->
             val ringSizePx = with(LocalDensity.current) { 76.dp.toPx() }
             Box(
@@ -407,7 +444,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 )
         )
 
-        // 6. Top Floating HUD
+        // 7. Top Floating HUD
         TopLoupeBar(
             state = state,
             onSelectLens = {
@@ -425,30 +462,126 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         )
 
-        // ML Kit Recognized Text / Serial Number Banner
-        state.recognizedText?.let { text ->
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = GlassBg,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 56.dp, start = 16.dp, end = 16.dp)
-                    .fillMaxWidth()
-                    .border(1.dp, LoupeCyan.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+        // Floating ML Kit Result Cards Stack (OCR + Entities, Barcodes, Smart Preset)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 56.dp, start = 14.dp, end = 14.dp)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Smart Preset Suggestion Card
+            state.smartPresetSuggestion?.let { suggestion ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = GlassBg,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, LoupeAmber.copy(alpha = 0.6f), RoundedCornerShape(14.dp))
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "ML KIT DETECTED TEXT",
-                            color = LoupeCyan,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoFixHigh,
+                            contentDescription = null,
+                            tint = LoupeAmber,
+                            modifier = Modifier.size(18.dp)
                         )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "SCENE: ${suggestion.detectedLabel.uppercase(Locale.US)}",
+                                color = LoupeAmber,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Tap to apply ${suggestion.suggestedFilter.label}" +
+                                    if (suggestion.suggestTorch) " + Torch" else "",
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = LoupeAmber,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { viewModel.applySmartPresetSuggestion() }
+                        ) {
+                            Text(
+                                text = "Apply",
+                                color = Color.Black,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.setSmartPresetSuggestion(null) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = Color.White.copy(alpha = 0.7f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ML Kit OCR + Entity Extraction Banner
+            state.recognizedText?.let { text ->
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = GlassBg,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, LoupeCyan.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "ML KIT OCR · ${state.ocrScript.label.uppercase(Locale.US)}",
+                                color = LoupeCyan,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (text.isNotEmpty()) {
+                                IconButton(
+                                    onClick = {
+                                        clipboard.setText(AnnotatedString(text))
+                                        viewModel.showMessage("Copied text to clipboard")
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy text",
+                                        tint = LoupeCyan,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { viewModel.setRecognizedText(null) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss OCR",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = text.ifEmpty { "No readable text found in frame." },
@@ -458,31 +591,103 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-                    if (text.isNotEmpty()) {
-                        IconButton(onClick = {
-                            clipboard.setText(AnnotatedString(text))
-                            viewModel.showMessage("Copied text to clipboard")
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Copy text",
-                                tint = LoupeCyan
-                            )
+                        if (state.extractedEntities.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                state.extractedEntities.forEach { entity ->
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = LoupeCyan.copy(alpha = 0.16f),
+                                        modifier = Modifier
+                                            .border(1.dp, LoupeCyan.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                clipboard.setText(AnnotatedString(entity.text))
+                                                viewModel.showMessage("Copied ${entity.typeLabel}: ${entity.text}")
+                                            }
+                                    ) {
+                                        Text(
+                                            text = "${entity.typeLabel}: ${entity.text}",
+                                            color = LoupeCyan,
+                                            fontSize = 11.sp,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                    IconButton(onClick = { viewModel.setRecognizedText(null) }) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Dismiss OCR",
-                            tint = Color.White.copy(alpha = 0.7f)
-                        )
+                }
+            }
+
+            // Micro-Barcode / DataMatrix Banner
+            if (state.scannedBarcodes.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = GlassBg,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, LoupeCyan.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "ML KIT BARCODE / DATAMATRIX",
+                                color = LoupeCyan,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { viewModel.setScannedBarcodes(emptyList()) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss barcodes",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        state.scannedBarcodes.take(3).forEach { code ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        clipboard.setText(AnnotatedString(code.rawValue))
+                                        viewModel.showMessage("Copied ${code.formatLabel}")
+                                    }
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "[${code.formatLabel}] ${code.rawValue}",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy barcode",
+                                    tint = LoupeCyan,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // 7. Bottom Glassmorphic Control Deck
+        // 8. Bottom Glassmorphic Control Deck
         Surface(
             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             color = GlassBg,
@@ -511,200 +716,215 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         onManualFocusToggle = viewModel::setManualFocusEnabled,
                         onFocusDistanceChange = viewModel::setFocusDistance,
                         onTorchStrengthChange = viewModel::setTorchStrength,
-                        onExposureChange = viewModel::setExposureIndex
+                        onExposureChange = viewModel::setExposureIndex,
+                        onCycleOcrScript = viewModel::cycleOcrScript
                     )
                 }
 
-                // Filter & On-Device AI Chips
+                // Row 1: ML Kit & AI Chips
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    FilterChip(
+                    LoupeChip(
                         selected = state.clarityEnhanceEnabled,
+                        label = "AI Clarity",
+                        icon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(15.dp)) },
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             viewModel.toggleClarityEnhance()
-                        },
-                        label = { Text("AI Clarity", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
-                            labelColor = Color.White.copy(alpha = 0.85f),
-                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
-                            selectedLabelColor = LoupeCyan
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = state.clarityEnhanceEnabled,
-                            borderColor = GlassBorder,
-                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
-                        )
+                        }
                     )
 
-                    FilterChip(
+                    LoupeChip(
                         selected = state.isScanningText || state.recognizedText != null,
+                        label = if (state.isScanningText) "Scanning..." else "OCR (${state.ocrScript.label})",
+                        icon = { Icon(Icons.Default.DocumentScanner, null, Modifier.size(15.dp)) },
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            val frozen = state.frozenBitmap
-                            if (state.isFrozen && frozen != null) {
-                                viewModel.setScanningText(true)
+                            viewModel.setScanningText(true)
+                            withCurrentZoomedFrame(targetMaxDim = 2048) { bmp, shouldRecycle ->
                                 TextScanner.recognizeText(
-                                    bitmap = frozen,
-                                    onResult = { viewModel.setRecognizedText(it) },
-                                    onError = {
-                                        viewModel.setScanningText(false)
-                                        viewModel.showMessage(it)
-                                    }
-                                )
-                            } else {
-                                viewModel.setScanningText(true)
-                                controller.captureBitmap(
-                                    onCaptured = { raw ->
-                                        scope.launch {
-                                            val enhanced = withContext(Dispatchers.Default) {
-                                                processZoomedBitmap(raw, targetMaxDim = 2048)
-                                            }
-                                            TextScanner.recognizeText(
-                                                bitmap = enhanced,
-                                                onResult = { text ->
-                                                    viewModel.setRecognizedText(text)
-                                                    enhanced.recycle()
+                                    bitmap = bmp,
+                                    script = state.ocrScript,
+                                    onResult = { text ->
+                                        if (text.isNotEmpty()) {
+                                            EntityExtractorHelper.extractEntities(
+                                                text = text,
+                                                onResult = { entities ->
+                                                    viewModel.setRecognizedText(text, entities)
+                                                    if (shouldRecycle) bmp.recycle()
                                                 },
-                                                onError = { err ->
-                                                    viewModel.setScanningText(false)
-                                                    viewModel.showMessage(err)
-                                                    enhanced.recycle()
+                                                onError = {
+                                                    viewModel.setRecognizedText(text, emptyList())
+                                                    if (shouldRecycle) bmp.recycle()
                                                 }
                                             )
+                                        } else {
+                                            viewModel.setRecognizedText(text, emptyList())
+                                            if (shouldRecycle) bmp.recycle()
                                         }
                                     },
-                                    onError = {
+                                    onError = { err ->
                                         viewModel.setScanningText(false)
-                                        viewModel.showMessage(it)
+                                        viewModel.showMessage(err)
+                                        if (shouldRecycle) bmp.recycle()
                                     }
                                 )
                             }
-                        },
-                        label = {
-                            Text(
-                                if (state.isScanningText) "Scanning..." else "ML Kit OCR",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
-                            labelColor = Color.White.copy(alpha = 0.85f),
-                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
-                            selectedLabelColor = LoupeCyan
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = state.isScanningText || state.recognizedText != null,
-                            borderColor = GlassBorder,
-                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
-                        )
+                        }
                     )
 
+                    LoupeChip(
+                        selected = state.isScanningBarcode || state.scannedBarcodes.isNotEmpty(),
+                        label = if (state.isScanningBarcode) "Scanning..." else "Barcode",
+                        icon = { Icon(Icons.Default.QrCodeScanner, null, Modifier.size(15.dp)) },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.setScanningBarcode(true)
+                            withCurrentZoomedFrame(targetMaxDim = 2048) { bmp, shouldRecycle ->
+                                BarcodeScanner.scanBarcodes(
+                                    bitmap = bmp,
+                                    onResult = { codes ->
+                                        viewModel.setScannedBarcodes(codes)
+                                        if (codes.isEmpty()) viewModel.showMessage("No barcode or DataMatrix detected")
+                                        if (shouldRecycle) bmp.recycle()
+                                    },
+                                    onError = { err ->
+                                        viewModel.setScanningBarcode(false)
+                                        viewModel.showMessage(err)
+                                        if (shouldRecycle) bmp.recycle()
+                                    }
+                                )
+                            }
+                        }
+                    )
+
+                    LoupeChip(
+                        selected = state.isDetectingObjects || state.detectedObjects.isNotEmpty(),
+                        label = if (state.isDetectingObjects) "Detecting..." else "Objects",
+                        icon = { Icon(Icons.Default.CenterFocusWeak, null, Modifier.size(15.dp)) },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            if (state.detectedObjects.isNotEmpty()) {
+                                viewModel.setDetectedObjects(emptyList())
+                            } else {
+                                viewModel.setDetectingObjects(true)
+                                withCurrentZoomedFrame(targetMaxDim = 1280) { bmp, shouldRecycle ->
+                                    ObjectDetectorHelper.detectObjects(
+                                        bitmap = bmp,
+                                        onResult = { boxes ->
+                                            viewModel.setDetectedObjects(boxes)
+                                            if (boxes.isEmpty()) {
+                                                viewModel.showMessage("No distinct object detected")
+                                            } else if (!state.isFrozen) {
+                                                val primary = boxes.first().normalizedRect
+                                                val fx = primary.centerX() * previewView.width
+                                                val fy = primary.centerY() * previewView.height
+                                                controller.tapToFocus(previewView, fx, fy, state.afLocked)
+                                            }
+                                            if (shouldRecycle) bmp.recycle()
+                                        },
+                                        onError = { err ->
+                                            viewModel.setDetectingObjects(false)
+                                            viewModel.showMessage(err)
+                                            if (shouldRecycle) bmp.recycle()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    )
+
+                    LoupeChip(
+                        selected = state.isAnalyzingScene || state.smartPresetSuggestion != null,
+                        label = if (state.isAnalyzingScene) "Analyzing..." else "Smart Preset",
+                        icon = { Icon(Icons.Default.AutoFixHigh, null, Modifier.size(15.dp)) },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.setAnalyzingScene(true)
+                            withCurrentZoomedFrame(targetMaxDim = 1024) { bmp, shouldRecycle ->
+                                SmartPresetLabeler.analyzeScene(
+                                    bitmap = bmp,
+                                    onResult = { suggestion ->
+                                        viewModel.setSmartPresetSuggestion(suggestion)
+                                        if (suggestion == null) viewModel.showMessage("No scene preset suggestion")
+                                        if (shouldRecycle) bmp.recycle()
+                                    },
+                                    onError = { err ->
+                                        viewModel.setAnalyzingScene(false)
+                                        viewModel.showMessage(err)
+                                        if (shouldRecycle) bmp.recycle()
+                                    }
+                                )
+                            }
+                        }
+                    )
+
+                    LoupeChip(
+                        selected = state.isIsolatingSubject,
+                        label = if (state.isIsolatingSubject) "Isolating..." else "Isolate",
+                        icon = { Icon(Icons.Default.FilterCenterFocus, null, Modifier.size(15.dp)) },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.setIsolatingSubject(true)
+                            withCurrentZoomedFrame(targetMaxDim = 1600) { bmp, shouldRecycle ->
+                                SubjectIsolator.isolateSubject(
+                                    bitmap = bmp,
+                                    onResult = { isolated ->
+                                        viewModel.setIsolatingSubject(false)
+                                        viewModel.setFrozenBitmap(isolated)
+                                        if (shouldRecycle) bmp.recycle()
+                                    },
+                                    onError = { err ->
+                                        viewModel.setIsolatingSubject(false)
+                                        viewModel.showMessage(err)
+                                        if (shouldRecycle) bmp.recycle()
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+
+                // Row 2: Visual Filters & Overlays
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     InspectionFilter.entries.forEach { filter ->
-                        val selected = state.activeFilter == filter
-                        FilterChip(
-                            selected = selected,
+                        LoupeChip(
+                            selected = state.activeFilter == filter,
+                            label = filter.label,
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 viewModel.setFilter(filter)
-                            },
-                            label = { Text(filter.label, fontSize = 12.sp, fontWeight = FontWeight.Medium) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
-                                labelColor = Color.White.copy(alpha = 0.85f),
-                                selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
-                                selectedLabelColor = LoupeCyan
-                            ),
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
-                                selected = selected,
-                                borderColor = GlassBorder,
-                                selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
-                            )
+                            }
                         )
                     }
 
-                    FilterChip(
+                    LoupeChip(
                         selected = state.focusPeakingEnabled,
+                        label = "Peaking",
+                        icon = { Icon(Icons.Default.CenterFocusStrong, null, Modifier.size(15.dp)) },
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             viewModel.toggleFocusPeaking()
-                        },
-                        label = { Text("Peaking", fontSize = 12.sp, fontWeight = FontWeight.Medium) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.CenterFocusStrong,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
-                            labelColor = Color.White.copy(alpha = 0.85f),
-                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
-                            selectedLabelColor = LoupeCyan
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = state.focusPeakingEnabled,
-                            borderColor = GlassBorder,
-                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
-                        )
+                        }
                     )
 
-                    FilterChip(
+                    LoupeChip(
                         selected = state.showGrid,
+                        label = "Grid",
+                        icon = { Icon(Icons.Default.GridOn, null, Modifier.size(15.dp)) },
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             viewModel.toggleGrid()
-                        },
-                        label = { Text("Grid", fontSize = 12.sp, fontWeight = FontWeight.Medium) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.GridOn,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(20.dp),
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
-                            labelColor = Color.White.copy(alpha = 0.85f),
-                            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
-                            selectedLabelColor = LoupeCyan
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = state.showGrid,
-                            borderColor = GlassBorder,
-                            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
-                        )
+                        }
                     )
                 }
 
@@ -826,7 +1046,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }
                     }
 
-                    // Concentric Pro Shutter Button (saves up to 4K/8K-class super-res ROI)
+                    // Concentric Pro Shutter Button
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -923,7 +1143,7 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                         }) {
                             Icon(
                                 imageVector = Icons.Default.Tune,
-                                contentDescription = "Focus and exposure controls",
+                                contentDescription = "Focus, exposure, and OCR script controls",
                                 tint = if (state.controlsExpanded) LoupeCyan else Color.White
                             )
                         }
@@ -1023,6 +1243,56 @@ fun MagnifierScreen(viewModel: MagnifierViewModel) {
                 .statusBarsPadding()
                 .padding(top = 64.dp)
         )
+    }
+}
+
+@Composable
+private fun LoupeChip(
+    selected: Boolean,
+    label: String,
+    icon: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium) },
+        leadingIcon = icon,
+        shape = RoundedCornerShape(20.dp),
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = LoupeSurfaceVariant.copy(alpha = 0.65f),
+            labelColor = Color.White.copy(alpha = 0.85f),
+            selectedContainerColor = LoupeCyan.copy(alpha = 0.22f),
+            selectedLabelColor = LoupeCyan
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = GlassBorder,
+            selectedBorderColor = LoupeCyan.copy(alpha = 0.6f)
+        )
+    )
+}
+
+@Composable
+private fun DetectedObjectsOverlay(
+    boxes: List<DetectedObjectBox>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        boxes.forEach { box ->
+            val r = box.normalizedRect
+            val left = r.left * size.width
+            val top = r.top * size.height
+            val w = (r.right - r.left) * size.width
+            val h = (r.bottom - r.top) * size.height
+            drawRect(
+                color = LoupeCyan,
+                topLeft = Offset(left, top),
+                size = Size(w, h),
+                style = Stroke(width = 3f)
+            )
+        }
     }
 }
 
@@ -1155,8 +1425,6 @@ private fun ZoomControlRow200x(
     onZoomChange: (Float) -> Unit
 ) {
     val presets = listOf(1f, 5f, 20f, 50f, 100f, 200f).filter { it in minZoom..maxZoom }
-
-    // Logarithmic mapping so 1x..10x has fine precision while reaching 200x smoothly
     val safeMin = minZoom.coerceAtLeast(0.5f)
     val logRange = ln((maxZoom / safeMin).toDouble()).toFloat().coerceAtLeast(0.01f)
     val sliderProgress = (ln((zoomRatio.coerceIn(safeMin, maxZoom) / safeMin).toDouble()).toFloat() / logRange)
@@ -1222,7 +1490,8 @@ private fun InspectorDrawer(
     onManualFocusToggle: (Boolean) -> Unit,
     onFocusDistanceChange: (Float) -> Unit,
     onTorchStrengthChange: (Int) -> Unit,
-    onExposureChange: (Int) -> Unit
+    onExposureChange: (Int) -> Unit,
+    onCycleOcrScript: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1233,6 +1502,35 @@ private fun InspectorDrawer(
             .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "OCR Script",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = LoupeCyan.copy(alpha = 0.2f),
+                    modifier = Modifier
+                        .border(1.dp, LoupeCyan.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onCycleOcrScript() }
+                ) {
+                    Text(
+                        text = "${state.ocrScript.label} (Tap to switch)",
+                        color = LoupeCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
             val supportsManual = state.activeLens?.supportsManualFocus == true
             if (supportsManual) {
                 val maxDiopters = state.activeLens!!.minFocusDistanceDiopters

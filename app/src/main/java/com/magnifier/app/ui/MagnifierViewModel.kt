@@ -7,7 +7,12 @@ import androidx.lifecycle.AndroidViewModel
 import com.magnifier.app.camera.CameraCapabilities
 import com.magnifier.app.camera.CameraLensDiscovery
 import com.magnifier.app.camera.CameraLensInfo
+import com.magnifier.app.processing.DetectedObjectBox
+import com.magnifier.app.processing.ExtractedEntity
 import com.magnifier.app.processing.InspectionFilter
+import com.magnifier.app.processing.OcrScript
+import com.magnifier.app.processing.ScannedBarcode
+import com.magnifier.app.processing.SmartPresetSuggestion
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,8 +34,17 @@ data class MagnifierUiState(
     val showGrid: Boolean = false,
     val focusPeakingEnabled: Boolean = false,
     val clarityEnhanceEnabled: Boolean = true,
+    val ocrScript: OcrScript = OcrScript.LATIN,
     val recognizedText: String? = null,
+    val extractedEntities: List<ExtractedEntity> = emptyList(),
     val isScanningText: Boolean = false,
+    val scannedBarcodes: List<ScannedBarcode> = emptyList(),
+    val isScanningBarcode: Boolean = false,
+    val detectedObjects: List<DetectedObjectBox> = emptyList(),
+    val isDetectingObjects: Boolean = false,
+    val smartPresetSuggestion: SmartPresetSuggestion? = null,
+    val isAnalyzingScene: Boolean = false,
+    val isIsolatingSubject: Boolean = false,
     val isFrozen: Boolean = false,
     val frozenBitmap: Bitmap? = null,
     val controlsExpanded: Boolean = false,
@@ -170,12 +184,66 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(clarityEnhanceEnabled = !it.clarityEnhanceEnabled) }
     }
 
+    fun cycleOcrScript() {
+        val entries = OcrScript.entries
+        _uiState.update { state ->
+            val next = entries[(entries.indexOf(state.ocrScript) + 1) % entries.size]
+            state.copy(ocrScript = next)
+        }
+    }
+
     fun setScanningText(scanning: Boolean) {
         _uiState.update { it.copy(isScanningText = scanning) }
     }
 
-    fun setRecognizedText(text: String?) {
-        _uiState.update { it.copy(recognizedText = text, isScanningText = false) }
+    fun setRecognizedText(text: String?, entities: List<ExtractedEntity> = emptyList()) {
+        _uiState.update {
+            it.copy(
+                recognizedText = text,
+                extractedEntities = entities,
+                isScanningText = false
+            )
+        }
+    }
+
+    fun setScanningBarcode(scanning: Boolean) {
+        _uiState.update { it.copy(isScanningBarcode = scanning) }
+    }
+
+    fun setScannedBarcodes(barcodes: List<ScannedBarcode>) {
+        _uiState.update { it.copy(scannedBarcodes = barcodes, isScanningBarcode = false) }
+    }
+
+    fun setDetectingObjects(detecting: Boolean) {
+        _uiState.update { it.copy(isDetectingObjects = detecting) }
+    }
+
+    fun setDetectedObjects(boxes: List<DetectedObjectBox>) {
+        _uiState.update { it.copy(detectedObjects = boxes, isDetectingObjects = false) }
+    }
+
+    fun setAnalyzingScene(analyzing: Boolean) {
+        _uiState.update { it.copy(isAnalyzingScene = analyzing) }
+    }
+
+    fun setSmartPresetSuggestion(suggestion: SmartPresetSuggestion?) {
+        _uiState.update { it.copy(smartPresetSuggestion = suggestion, isAnalyzingScene = false) }
+    }
+
+    fun applySmartPresetSuggestion() {
+        _uiState.update { state ->
+            val s = state.smartPresetSuggestion ?: return@update state
+            state.copy(
+                activeFilter = s.suggestedFilter,
+                torchEnabled = if (s.suggestTorch && state.capabilities.hasFlash) true else state.torchEnabled,
+                smartPresetSuggestion = null,
+                statusMessage = "Applied ${s.suggestedFilter.label} preset for ${s.detectedLabel}"
+            )
+        }
+    }
+
+    fun setIsolatingSubject(isolating: Boolean) {
+        _uiState.update { it.copy(isIsolatingSubject = isolating) }
     }
 
     fun updatePeakingBitmap(bitmap: Bitmap?) {
@@ -188,7 +256,16 @@ class MagnifierViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun unfreeze() {
-        _uiState.update { it.copy(isFrozen = false, frozenBitmap = null, recognizedText = null) }
+        _uiState.update {
+            it.copy(
+                isFrozen = false,
+                frozenBitmap = null,
+                recognizedText = null,
+                extractedEntities = emptyList(),
+                scannedBarcodes = emptyList(),
+                detectedObjects = emptyList()
+            )
+        }
     }
 
     fun toggleControlsDrawer() {
